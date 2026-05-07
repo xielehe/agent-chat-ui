@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import { ReactNode, useEffect, useRef } from "react";
+import { ReactNode, useCallback, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { useStreamContext } from "@/providers/Stream";
@@ -110,8 +110,29 @@ export function Thread() {
   const isLoading = stream.isLoading;
 
   const lastError = useRef<string | undefined>(undefined);
+  const submitSequence = useRef(0);
+
+  const logStreamDebug = useCallback(
+    (event: string, details?: Record<string, unknown>) => {
+      const enabled =
+        process.env.NODE_ENV !== "production" ||
+        (typeof window !== "undefined" &&
+          window.localStorage.getItem("debug:stream") === "1");
+      if (!enabled) return;
+
+      console.info("[stream-debug]", {
+        ts: new Date().toISOString(),
+        event,
+        threadId,
+        isLoading: stream.isLoading,
+        ...(details ?? {}),
+      });
+    },
+    [threadId, stream.isLoading],
+  );
 
   const setThreadId = (id: string | null) => {
+    logStreamDebug("set_thread_id", { from: threadId, to: id });
     _setThreadId(id);
 
     // close artifact and reset artifact context
@@ -120,6 +141,19 @@ export function Thread() {
   };
 
   useEffect(() => {
+    logStreamDebug("loading_changed");
+  }, [stream.isLoading, logStreamDebug]);
+
+  useEffect(() => {
+    logStreamDebug("messages_changed", { messageCount: messages.length });
+  }, [messages.length, logStreamDebug]);
+
+  useEffect(() => {
+    logStreamDebug("error_changed", {
+      message: (stream.error as any)?.message,
+      error: stream.error,
+    });
+
     if (!stream.error) {
       lastError.current = undefined;
       return;
@@ -145,7 +179,7 @@ export function Thread() {
     } catch {
       // no-op
     }
-  }, [stream.error]);
+  }, [stream.error, logStreamDebug]);
 
   // TODO: this should be part of the useStream hook
   const prevMessageLength = useRef(0);
@@ -163,9 +197,15 @@ export function Thread() {
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if ((input.trim().length === 0 && contentBlocks.length === 0) || isLoading)
+    if ((input.trim().length === 0 && contentBlocks.length === 0) || isLoading) {
+      logStreamDebug("submit_skipped", {
+        emptyInput: input.trim().length === 0 && contentBlocks.length === 0,
+        isLoading,
+      });
       return;
+    }
     setFirstTokenReceived(false);
+    const submitId = ++submitSequence.current;
 
     const newHumanMessage: Message = {
       id: uuidv4(),
@@ -181,6 +221,13 @@ export function Thread() {
     const context =
       Object.keys(artifactContext).length > 0 ? artifactContext : undefined;
 
+    logStreamDebug("submit_start", {
+      submitId,
+      toolMessageCount: toolMessages.length,
+      hasContext: !!context,
+      inputLength: input.trim().length,
+      contentBlockCount: contentBlocks.length,
+    });
     stream.submit(
       { messages: [...toolMessages, newHumanMessage], context },
       {
@@ -206,6 +253,9 @@ export function Thread() {
   const handleRegenerate = (
     parentCheckpoint: Checkpoint | null | undefined,
   ) => {
+    logStreamDebug("regenerate", {
+      checkpointId: parentCheckpoint?.checkpoint_id,
+    });
     // Do this so the loading state is correct
     prevMessageLength.current = prevMessageLength.current - 1;
     setFirstTokenReceived(false);
@@ -434,6 +484,7 @@ export function Thread() {
                             !e.metaKey &&
                             !e.nativeEvent.isComposing
                           ) {
+                            logStreamDebug("keydown_submit_enter");
                             e.preventDefault();
                             const el = e.target as HTMLElement | undefined;
                             const form = el?.closest("form");
@@ -463,7 +514,10 @@ export function Thread() {
                         {stream.isLoading ? (
                           <Button
                             key="stop"
-                            onClick={() => stream.stop()}
+                            onClick={() => {
+                              logStreamDebug("stop_clicked");
+                              stream.stop();
+                            }}
                             className="ml-auto"
                           >
                             <LoaderCircle className="h-4 w-4 animate-spin" />

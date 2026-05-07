@@ -4,6 +4,7 @@ import React, {
   ReactNode,
   useState,
   useEffect,
+  useRef,
 } from "react";
 import { useStream } from "@langchain/langgraph-sdk/react";
 import { type Message } from "@langchain/langgraph-sdk";
@@ -51,6 +52,7 @@ async function checkGraphStatus(
   apiUrl: string,
   apiKey: string | null,
   authScheme?: string,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   try {
     const headers = new Headers();
@@ -58,6 +60,7 @@ async function checkGraphStatus(
     if (authScheme) headers.set("X-Auth-Scheme", authScheme);
 
     const res = await fetch(`${apiUrl}/info`, {
+      signal,
       headers,
     });
 
@@ -83,6 +86,7 @@ const StreamSession = ({
 }) => {
   const [threadId, setThreadId] = useQueryState("threadId");
   const { getThreads, setThreads } = useThreads();
+  const healthCheckRequestId = useRef(0);
   const streamValue = useTypedStream({
     apiUrl,
     apiKey: apiKey ?? undefined,
@@ -111,7 +115,14 @@ const StreamSession = ({
   });
 
   useEffect(() => {
-    checkGraphStatus(apiUrl, apiKey, authScheme).then((ok) => {
+    const controller = new AbortController();
+    const requestId = ++healthCheckRequestId.current;
+
+    checkGraphStatus(apiUrl, apiKey, authScheme, controller.signal).then((ok) => {
+      // Ignore stale responses from previous checks.
+      if (requestId !== healthCheckRequestId.current || controller.signal.aborted)
+        return;
+
       if (!ok) {
         toast.error("Failed to connect to LangGraph server", {
           description: () => (
@@ -126,6 +137,10 @@ const StreamSession = ({
         });
       }
     });
+
+    return () => {
+      controller.abort();
+    };
   }, [apiKey, apiUrl, authScheme]);
 
   return (
